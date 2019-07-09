@@ -16,8 +16,31 @@ import torch
 import torch.nn as nn
 from .networks import init_net, get_norm_layer
 
+
+# based on https://github.com/junyanz/pytorch-CycleGAN-and-pix2pix/issues/190#issuecomment-358546675
+class UpsampleConv(nn.Module):
+
+    def __init__(self, scale, in_channel, out_channel, kernel):
+        super(UpsampleConv, self).__init__()
+
+        # check if kernel_size = 3 or kernel_size = 4 gives better results, using 3 for now
+        # kernel_size of 4 and stride of 2 was original ConvTranspose2d here, original cyclegan generator uses kernel=3
+        # stride = 1 since transpose used stride to upscale, which upsample is used for instead
+
+        self.upsample = nn.Upsample(scale_factor=scale, mode='nearest')
+        self.pad = nn.ReflectionPad2d(1)
+        self.conv = nn.Conv2d(in_channel, out_channel, kernel_size=3, stride=1, padding=0)
+
+    def forward(self, x):
+        x = self.upsample(x)
+        x = self.pad(x)
+        x = self.conv(x)
+        return x
+
+
 class Basicblock(nn.Module):
     '''A simple version of residual block.'''
+
     def __init__(self, in_feat, kernel_size=3, stride=1, padding=1, norm='instance'):
         super(Basicblock, self).__init__()
 
@@ -29,8 +52,10 @@ class Basicblock(nn.Module):
                     norm_layer(in_feat)]
         self.residual = nn.Sequential(*residual)
         self.relu = nn.ReLU(True)
+
     def forward(self, x):
         return self.relu(x + self.residual(x))
+
 
 class Bottleneck(nn.Module):
     def __init__(self, in_feat, out_feat, depth_bottleneck, stride=1, norm='instance'):
@@ -38,7 +63,7 @@ class Bottleneck(nn.Module):
 
         norm_layer = get_norm_layer(norm)
         self.in_equal_out = in_feat == out_feat
-        
+
         self.preact = nn.Sequential(norm_layer(in_feat),
                                     nn.ReLU(inplace=True))
 
@@ -66,8 +91,10 @@ class Bottleneck(nn.Module):
             shortcut = self.shortcut(preact)
         return self.relu(shortcut + self.residual(x))
 
+
 class ResNetGenerator_Att(nn.Module):
     '''ResNet-based generator for attention mask prediction.'''
+
     def __init__(self, in_nc, ngf, norm='instance', residual_mode='basic'):
         super(ResNetGenerator_Att, self).__init__()
         assert residual_mode in ['bottleneck', 'basic']
@@ -76,35 +103,37 @@ class ResNetGenerator_Att(nn.Module):
         encoder = [nn.Conv2d(in_nc, ngf, kernel_size=7, stride=2, padding=3, bias=False),
                    norm_layer(ngf),
                    nn.ReLU(True),
-                   nn.Conv2d(ngf, ngf*2, kernel_size=3, stride=2, padding=1, bias=False),
-                   norm_layer(ngf*2),
+                   nn.Conv2d(ngf, ngf * 2, kernel_size=3, stride=2, padding=1, bias=False),
+                   norm_layer(ngf * 2),
                    nn.ReLU(True)]
 
         if residual_mode == 'bottleneck':
-            encoder += [Bottleneck(ngf*2, ngf*2, ngf*2, norm=norm)]
+            encoder += [Bottleneck(ngf * 2, ngf * 2, ngf * 2, norm=norm)]
         else:
-            encoder += [Basicblock(ngf*2, norm=norm)]
+            encoder += [Basicblock(ngf * 2, norm=norm)]
         self.encoder = nn.Sequential(*encoder)
 
-        self.decoder1 = nn.Sequential(nn.Conv2d(ngf*2, ngf*2, kernel_size=3, stride=1, padding=1, bias=False),
-                                      norm_layer(ngf*2),
+        self.decoder1 = nn.Sequential(nn.Conv2d(ngf * 2, ngf * 2, kernel_size=3, stride=1, padding=1, bias=False),
+                                      norm_layer(ngf * 2),
                                       nn.ReLU(True))
 
-        self.decoder2 = nn.Sequential(nn.Conv2d(ngf*2, ngf, kernel_size=3, stride=1, padding=1, bias=False),
+        self.decoder2 = nn.Sequential(nn.Conv2d(ngf * 2, ngf, kernel_size=3, stride=1, padding=1, bias=False),
                                       norm_layer(ngf),
                                       nn.ReLU(True),
                                       nn.Conv2d(ngf, 1, kernel_size=7, stride=1, padding=3, bias=False),
                                       nn.Sigmoid())
         self.up2 = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
-    
+
     def forward(self, x):
         encoder = self.encoder(x)
         decoder1 = self.decoder1(self.up2(encoder))
         decoder2 = self.decoder2(self.up2(decoder1))
         return decoder2
 
+
 class ResNetGenerator_Img(nn.Module):
     '''ResNet-based generator for target generation.'''
+
     def __init__(self, in_nc, out_nc, ngf, num_blocks=9, norm='instance', residual_mode='basic'):
         super(ResNetGenerator_Img, self).__init__()
         assert residual_mode in ['bottleneck', 'basic']
@@ -113,25 +142,23 @@ class ResNetGenerator_Img(nn.Module):
         model = [nn.Conv2d(in_nc, ngf, kernel_size=7, stride=1, padding=3, bias=False),
                  norm_layer(ngf),
                  nn.ReLU(True),
-                 nn.Conv2d(ngf, ngf*2, kernel_size=3, stride=2, padding=1, bias=False),
-                 norm_layer(ngf*2),
+                 nn.Conv2d(ngf, ngf * 2, kernel_size=3, stride=2, padding=1, bias=False),
+                 norm_layer(ngf * 2),
                  nn.ReLU(True),
-                 nn.Conv2d(ngf*2, ngf*4, kernel_size=3, stride=2, padding=1, bias=False),
-                 norm_layer(ngf*4),
+                 nn.Conv2d(ngf * 2, ngf * 4, kernel_size=3, stride=2, padding=1, bias=False),
+                 norm_layer(ngf * 4),
                  nn.ReLU(True)]
 
         for i in range(num_blocks):
             if residual_mode == 'bottleneck':
-                model += [Bottleneck(ngf*4, ngf*4, ngf, norm=norm)]
+                model += [Bottleneck(ngf * 4, ngf * 4, ngf, norm=norm)]
             else:
-                model += [Basicblock(ngf*4, norm=norm)]
+                model += [Basicblock(ngf * 4, norm=norm)]
 
-        model += [nn.ConvTranspose2d(ngf*4, ngf*2, kernel_size=4, stride=2,
-                                     padding=1, bias=False),
-                  norm_layer(ngf*2),
+        model += [UpsampleConv(scale=2, in_channel=ngf * 4, out_channel=ngf * 2, kernel=4),
+                  norm_layer(ngf * 2),
                   nn.ReLU(True),
-                  nn.ConvTranspose2d(ngf*2, ngf, kernel_size=4, stride=2,
-                                     padding=1, bias=False),
+                  UpsampleConv(scale=2, in_channel=ngf * 2, out_channel=ngf, kernel=4),
                   norm_layer(ngf),
                   nn.ReLU(True),
                   nn.Conv2d(ngf, out_nc, kernel_size=7, stride=1, padding=3, bias=False),
@@ -144,6 +171,7 @@ class ResNetGenerator_Img(nn.Module):
 
 class ResNetGenerator_v2(nn.Module):
     '''ResNet-based generator for target generation.'''
+
     def __init__(self, in_nc, out_nc, ngf, num_blocks=9, norm='instance', residual_mode='basic'):
         super(ResNetGenerator_v2, self).__init__()
         assert residual_mode in ['bottleneck', 'basic']
@@ -152,25 +180,23 @@ class ResNetGenerator_v2(nn.Module):
         model = [nn.Conv2d(in_nc, ngf, kernel_size=7, stride=1, padding=3, bias=False),
                  norm_layer(ngf),
                  nn.ReLU(True),
-                 nn.Conv2d(ngf, ngf*2, kernel_size=3, stride=2, padding=1, bias=False),
-                 norm_layer(ngf*2),
+                 nn.Conv2d(ngf, ngf * 2, kernel_size=3, stride=2, padding=1, bias=False),
+                 norm_layer(ngf * 2),
                  nn.ReLU(True),
-                 nn.Conv2d(ngf*2, ngf*4, kernel_size=3, stride=2, padding=1, bias=False),
-                 norm_layer(ngf*4),
+                 nn.Conv2d(ngf * 2, ngf * 4, kernel_size=3, stride=2, padding=1, bias=False),
+                 norm_layer(ngf * 4),
                  nn.ReLU(True)]
 
         for i in range(num_blocks):
             if residual_mode == 'bottleneck':
-                model += [Bottleneck(ngf*4, ngf*4, ngf, norm=norm)]
+                model += [Bottleneck(ngf * 4, ngf * 4, ngf, norm=norm)]
             else:
-                model += [Basicblock(ngf*4, norm=norm)]
+                model += [Basicblock(ngf * 4, norm=norm)]
 
-        model += [nn.ConvTranspose2d(ngf*4, ngf*2, kernel_size=4, stride=2,
-                                     padding=1, bias=False),
-                  norm_layer(ngf*2),
+        model += [UpsampleConv(scale=2, in_channel=ngf * 4, out_channel=ngf * 2, kernel=4),
+                  norm_layer(ngf * 2),
                   nn.ReLU(True),
-                  nn.ConvTranspose2d(ngf*2, ngf, kernel_size=4, stride=2,
-                                     padding=1, bias=False),
+                  UpsampleConv(scale=2, in_channel=ngf * 2, out_channel=ngf, kernel=4),
                   norm_layer(ngf),
                   nn.ReLU(True)]
         self.model = nn.Sequential(*model)
@@ -188,20 +214,21 @@ class ResNetGenerator_v2(nn.Module):
 
 class Discriminator(nn.Module):
     '''Discriminator'''
+
     def __init__(self, in_nc, ndf, n_layers=3, norm='instance', transition_rate=0.1):
         super(Discriminator, self).__init__()
 
         self.transition_rate = transition_rate
         norm_layer = get_norm_layer(norm)
-        model = [nn.Conv2d(in_nc, ndf, kernel_size=4, stride=2, padding=1, bias=False), 
+        model = [nn.Conv2d(in_nc, ndf, kernel_size=4, stride=2, padding=1, bias=False),
                  norm_layer(ndf),
                  nn.LeakyReLU(0.2, True)]
 
         cur_in, cur_out = ndf, ndf
         for i in range(n_layers):
             cur_in = cur_out
-            cur_out =  ndf * min(2**i, 8)
-            model += [nn.Conv2d(cur_in, cur_out, kernel_size=4, stride=2, padding=1, bias=False), 
+            cur_out = ndf * min(2 ** i, 8)
+            model += [nn.Conv2d(cur_in, cur_out, kernel_size=4, stride=2, padding=1, bias=False),
                       norm_layer(cur_out),
                       nn.LeakyReLU(0.2, True)]
 
@@ -209,47 +236,50 @@ class Discriminator(nn.Module):
         self.model = nn.Sequential(*model)
 
     def forward(self, x):
-        #x_ = x*(mask>self.transition_rate).float()
+        # x_ = x*(mask>self.transition_rate).float()
         return self.model(x)
 
-def define_net_att(in_nc, 
-                   ngf, 
-                   norm='instance', 
-                   init_type='normal', 
-                   init_gain=0.02, 
+
+def define_net_att(in_nc,
+                   ngf,
+                   norm='instance',
+                   init_type='normal',
+                   init_gain=0.02,
                    gpu_ids=[]):
     net = ResNetGenerator_Att(in_nc, ngf, norm=norm)
     return init_net(net, init_type, init_gain, gpu_ids)
 
-def define_net_img(in_nc, 
-                   out_nc, 
-                   ngf, 
-                   num_blocks=9, 
-                   norm='instance', 
-                   init_type='normal', 
-                   init_gain=0.02, 
+
+def define_net_img(in_nc,
+                   out_nc,
+                   ngf,
+                   num_blocks=9,
+                   norm='instance',
+                   init_type='normal',
+                   init_gain=0.02,
                    gpu_ids=[]):
     net = ResNetGenerator_Img(in_nc, out_nc, ngf, num_blocks=num_blocks, norm=norm)
     return init_net(net, init_type, init_gain, gpu_ids)
 
 
-def define_net_faster(in_nc, 
-                      out_nc, 
-                      ngf, 
-                      num_blocks=9, 
-                      norm='instance', 
-                      init_type='normal', 
-                      init_gain=0.02, 
+def define_net_faster(in_nc,
+                      out_nc,
+                      ngf,
+                      num_blocks=9,
+                      norm='instance',
+                      init_type='normal',
+                      init_gain=0.02,
                       gpu_ids=[]):
     net = ResNetGenerator_v2(in_nc, out_nc, ngf, num_blocks=num_blocks, norm=norm)
     return init_net(net, init_type, init_gain, gpu_ids)
 
-def define_net_dis(in_nc, 
-                   ndf, 
-                   n_layers=3, 
-                   norm='instance', 
-                   init_type='normal', 
-                   init_gain=0.02, 
+
+def define_net_dis(in_nc,
+                   ndf,
+                   n_layers=3,
+                   norm='instance',
+                   init_type='normal',
+                   init_gain=0.02,
                    gpu_ids=[]):
     net = Discriminator(in_nc, ndf, n_layers, norm=norm)
     return init_net(net, init_type, init_gain, gpu_ids)
